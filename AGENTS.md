@@ -10,23 +10,30 @@
 - **Spec index:** `specs/README.md` lists all specifications organized by phase. Only specs with status "Ready" should be implemented.
 - **Changelogs are immutable.** When creating new changelog entries, old entries never change.
 
+## tracks.md
+
+**Never read tracks.md in full — it exceeds context limits.** Use targeted reads:
+
+1. **Find your section:** `Grep` for `## <your-spec>.md` to get the line number
+2. **Read your section:** `Read` with `offset` and `limit` (typically 30-50 lines) starting from that line number
+3. **Write updates:** Use `Edit` to modify only your section — never rewrite the file
+
+## Build & Test
+
+<!-- Customize: document your project's build and test commands -->
+
+- Use the project's standard build tooling. See specs/ for build and toolchain details.
+- Validate with the full test suite, not just unit tests. If integration tests fail, that's a real failure — do not dismiss them.
+
 ## Conventions
 
-<!-- Customize these conventions for your project -->
+<!-- Customize: add project-specific conventions (language, style, patterns) -->
 
 - Follow patterns in existing code for naming, structure, and style
 - See specs/ for directory layout and project structure specs
 
-### Test Organization
+### Interfaces and Dependencies
 
-<!-- Customize these conventions for your project and language of choice-->
-
-- **Tests belong in separate files.** For any module `foo.rs`, tests should be in `foo_test.rs` (same directory) or `tests/foo.rs` (integration tests).
-- **Do not use `#[cfg(test)] mod tests {}` in source files.** This bloats source files and makes navigation harder.
-- **Exception:** Small modules (<200 lines) may include inline tests if the tests are brief.
-
-### Mocking and Traits
-
-- **Use traits for external dependencies.** Database access, HTTP clients, K8s clients — anything that crosses a boundary.
-- **Mock at boundaries, not internals.** Mock the trait, not the implementation details.
-- **Integration tests use real implementations.** Only database crates hit real databases.
+- **Use interfaces for external dependencies.** Database access, HTTP clients, external services — anything that crosses a boundary.
+- **Mock at boundaries, not internals.** Mock the interface, not implementation details.
+- **Dependency injection over globals.** Pass dependencies explicitly rather than importing singletons.
