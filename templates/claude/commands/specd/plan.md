@@ -9,9 +9,9 @@
 ## Workflow
 
 1. **Discuss** — Ask clarifying questions about what the user wants. Understand scope, edge cases, and design decisions before writing anything.
-2. **Write the spec** — Create or update the spec in `specs/`. Follow the format in `specs/example-spec.md`. Specs define WHAT and WHY, not HOW. New specs start at v0.1 with status Draft.
-3. **Write work items as you go** — As each spec section solidifies, IMMEDIATELY write corresponding work items to `specd_work_list.md` under a `## spec-name vX.Y` section header. Do not wait for the user to ask — this is not optional. The work list is the primary deliverable of planning. If you finish a planning session without writing work items, you have failed.
-4. **Update specs/README.md** — Add or update the spec entry in the index table with the correct version and status.
+2. **Write the spec** — Create or update the spec in `specs/`. Follow the format in `specs/example-spec.md`. Specs define WHAT and WHY, not HOW. New specs start with status Draft.
+3. **Write work items as you go** — As each spec section solidifies, IMMEDIATELY write corresponding work items to `specd_work_list.md` under a `## spec-name` section header. Do not wait for the user to ask — this is not optional. The work list is the primary deliverable of planning. If you finish a planning session without writing work items, you have failed.
+4. **Update specs/README.md** — Add or update the spec entry in the index table with the correct status.
 5. **Remind the user** — The spec starts as Draft. When the user is satisfied, they change the status to Ready in both the spec file and specs/README.md. The loop only implements Ready specs.
 
 When **updating** an existing spec, always review the work items in specd_work_list.md for that spec. Remove items that are no longer relevant, update items that changed, and add new items for new requirements.
@@ -56,7 +56,7 @@ Write:
 1. **List every distinct behavioral requirement** you just wrote in the spec. Go line by line. If a sentence says the system must do X, that's a requirement. If it says "convert A to B", that's a requirement. If it says "warn when C", that's a requirement.
 2. **Check for implied dependencies.** Does a requirement assume something exists that might not (e.g., timezone info, a tool, a database column)? Each gap is a work item or a blocker annotation.
 3. **Write one work item per requirement** — concrete, specific, with a clear done state.
-4. **Review existing work items** for this spec version. Remove items that are no longer relevant after the spec change, update items whose scope changed, and unblock items whose dependencies were resolved. Do not leave stale items in the list.
+4. **Review existing work items** for this spec. Remove items that are no longer relevant after the spec change, update items whose scope changed, and unblock items whose dependencies were resolved. Do not leave stale items in the list.
 
 This checkpoint applies both when writing a new spec and when refining an existing one. Every spec edit should trigger a re-evaluation of the work list.
 

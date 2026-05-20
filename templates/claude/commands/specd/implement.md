@@ -9,11 +9,11 @@ After reading specd_work_list.md, check if there are any unblocked items (lines 
 
 ## Step 1: Pick a work item
 
-- Pick an unblocked item from specd_work_list.md — an item is unblocked if and only if its line does NOT contain the string `(blocked:`. Items without that string are ready to implement regardless of what version or section they're in.
+- Pick an unblocked item from specd_work_list.md — an item is unblocked if and only if its line does NOT contain the string `(blocked:`.
 
 ## Step 2: Read the relevant spec
 
-- The section header above the work item tells you which spec it belongs to (e.g. `## auth v0.1` means read the auth spec)
+- The section header above the work item tells you which spec it belongs to (e.g. `## auth` means read the auth spec)
 - Read ONLY that spec — do not read other specs. The work item is a summary; the spec has the detail.
 - Specs are the source of truth, not existing code
 - Only implement work items for specs with status "Ready"

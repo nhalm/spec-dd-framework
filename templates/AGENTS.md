@@ -5,7 +5,7 @@ PROJECT.md
 **Specs are prescriptive, not descriptive.** The spec defines what code MUST do.
 
 - **Spec is source of truth.** If code contradicts the spec, the code is wrong — refactor it.
-- **Read the full spec on version changes.** When a spec version changes, re-read the entire spec.
+- **Always read the full spec before implementing a work item.** The spec is the source of truth; don't rely on memory of a previous read.
 - **Don't build on broken foundations.** If existing code uses the wrong model (e.g., wrong ID scheme, wrong data flow), fix it first. Don't add new features on top of incorrect code.
 - **Spec index:** `specs/README.md` lists all specifications organized by phase. Only specs with status "Ready" should be implemented.
 
