@@ -19,9 +19,7 @@ Specs are **steering documents** — they define WHAT to build and WHY, not HOW 
 
 **Dependencies:** If a feature depends on another spec, check that spec's status. Only implement if the dependency is Ready or Implemented. Mark blocked features with "(blocked: specname)".
 
-**Versioning:** Specs use `v{major}.{minor}` versioning. Minor versions increment sequentially — v0.9 is followed by v0.10, not v1.0. Only increment the major version when explicitly instructed.
-
-**Cross-references:** When referencing another spec in the body (Out of scope, Dependencies, inline text), use a real markdown link with the correct relative path. Changelog entries are historical records and use plain text names.
+**Cross-references:** When referencing another spec in the body (Out of scope, Dependencies, inline text), use a real markdown link with the correct relative path.
 
 **Work items** live in [specd_work_list.md](../specd_work_list.md). The `/specd:audit` command generates work items directly in specd_work_list.md based on gaps between specs and code. Humans and planning agents can also write directly to specd_work_list.md during spec phase.
 
@@ -38,22 +36,22 @@ Specs are **steering documents** — they define WHAT to build and WHY, not HOW 
 
 ## Foundation
 
-| Spec | Version | Status | Description |
-|------|---------|--------|-------------|
-| [example-spec](example-spec.md) | v0.1 | Draft | Example spec showing the format |
+| Spec | Status | Description |
+|------|--------|-------------|
+| [example-spec](example-spec.md) | Draft | Example spec showing the format |
 
 <!-- Add your foundation specs here -->
 
 ## Core
 
-| Spec | Version | Status | Description |
-|------|---------|--------|-------------|
+| Spec | Status | Description |
+|------|--------|-------------|
 
 <!-- Add your core feature specs here -->
 
 ## Future
 
-| Spec | Version | Status | Description |
-|------|---------|--------|-------------|
+| Spec | Status | Description |
+|------|--------|-------------|
 
 <!-- Add your future/planned specs here -->

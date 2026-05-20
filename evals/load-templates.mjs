@@ -14,14 +14,8 @@ const AUTH_SPEC = `# Auth Spec
 
 | Field | Value |
 | ----- | ----- |
-| Version | v0.1 |
 | Status | Ready |
 | Last Updated | 2025-01-01 |
-
-## Changelog
-
-### v0.1
-- Initial spec
 
 ## Overview
 

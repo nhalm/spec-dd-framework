@@ -35,7 +35,7 @@ Read the full finding (Finding, Code, Spec, Options, Recommendation) and the Dec
 Based on the decision:
 
 - If the decision says to **fix code** → create a work item in specd_work_list.md. Include the human's specific guidance in the work item description.
-- If the decision says to **update the spec** → update the spec (bump version), then add a work item to specd_work_list.md under the new version.
+- If the decision says to **update the spec** → update the spec, then add a work item to specd_work_list.md under the `## spec-name` section.
 - If the decision says to **skip or ignore** → drop the finding, no work item needed.
 - If the decision says to **do both** (fix code AND update spec) → do both.
 
@@ -47,6 +47,6 @@ After processing all findings, commit all changed spec files and `specs/README.m
 
 - Each work item must be a small, single unit of work — one agent can complete it in one iteration
 - If a work item depends on another, add `(blocked: dependency description)` at the end
-- Use the exact specd_work_list.md format: section headers are `## spec-name vX.Y`, items are `- description`
+- Use the exact specd_work_list.md format: section headers are `## spec-name`, items are `- description`
 - Preserve the human's specific guidance from the Decision field in the work item — don't generalize it away
 - Do NOT implement anything — only populate specd_work_list.md and update specs

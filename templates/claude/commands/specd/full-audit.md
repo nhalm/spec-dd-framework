@@ -19,8 +19,6 @@ Only flag things that are **functionally wrong** — broken behavior, missing fe
 - Cosmetic differences (naming, formatting, ordering) → NOT a finding
 - Documentation gaps in the spec → NOT a finding
 
-**Do NOT bump spec versions for documentation clarifications.** If the spec wording is imprecise but the code is correct, the spec is fine. Only bump versions when the spec needs to prescribe genuinely new or changed behavior.
-
 ## Process
 
 Work through each spec sequentially. For each spec:
@@ -44,7 +42,7 @@ When the agent returns findings, **you validate each one yourself**:
 3. For each finding, answer: "Is the code actually broken or producing wrong results?" If no, reject the finding.
 4. Categorize each confirmed finding:
    - **Code is broken / produces wrong results** → specd_work_list.md item
-   - **Spec needs to prescribe new behavior** → spec update candidate (version bump required)
+   - **Spec needs to prescribe new behavior** → spec update candidate
    - **Ambiguous, needs human** → specd_review.md item
    - **Already known / in progress / duplicate** → skip
    - **Code works fine, just different from spec wording** → skip (do NOT flag)
@@ -59,15 +57,14 @@ Write confirmed findings for this spec before moving to the next one.
 
 ### specd_work_list.md
 
-Add concrete, actionable work items under `## spec-name vX.Y` section headers. Each item must be a small, single unit of work. Add `(blocked: ...)` for items with dependencies.
+Add concrete, actionable work items under `## spec-name` section headers. Each item must be a small, single unit of work. Add `(blocked: ...)` for items with dependencies.
 
 ### Spec updates
 
 When the spec needs to prescribe genuinely new or changed behavior (NOT documentation fixes):
 
 1. Update the spec body with the corrected content
-2. Bump the version (minor increment: v0.9 → v0.10)
-3. Add corresponding work items to specd_work_list.md under the new version
+2. Add corresponding work items to specd_work_list.md under the `## spec-name` section
 
 ### specd_review.md
 
@@ -93,7 +90,7 @@ Letter the options so the human can respond with just a letter, a letter plus cl
 After processing each spec:
 
 - **Ready spec with NO findings** → Update status to "Implemented" in both the spec file and specs/README.md
-- **Implemented spec with findings** → Bump version, update status to "Ready" in both the spec file and specs/README.md, add work items to specd_work_list.md
+- **Implemented spec with findings** → Update status to "Ready" in both the spec file and specs/README.md, add work items to specd_work_list.md
 - **Ready spec with findings** → Status stays Ready (findings are in specd_work_list.md)
 
 ## Committing
