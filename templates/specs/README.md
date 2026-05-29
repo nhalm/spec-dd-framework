@@ -2,56 +2,74 @@
 
 > {One-line project description}
 
-## How Specs Work
+## How specs work in this project
 
-Specs are **steering documents** — they define WHAT to build and WHY, not HOW to implement.
+Specs are **steering documents** — they define WHAT to build and WHY, not HOW. They are
+also **executable contracts**: each `### Behavior N` block contains a runnable test that
+the audit phase actually executes against the code.
 
-**Workflow:**
+## Workflow
 
-1. **Spec phase** — We work through a spec until it's right
-2. **Loop phase** — `loop.sh` runs agents that implement the spec
+1. **Plan** (`/specd:plan <spec-name>` in a Claude session) — draft or update a spec, then
+   approve a decomposition. Items only enter the worklist on explicit approval.
+2. **Loop** (`specd loop start`) — the orchestrator drains the worklist one item at a time,
+   each in a fresh `claude --bg` session.
+3. **Audit** (automatic when the queue drains) — `specs.js test` runs every behavior's Test
+   against the implementation; failing behaviors are queued back as fixes.
+4. **Review intake** (`/specd:review-intake` if there are pending findings) — process your
+   decisions into work items or spec edits.
 
-**Agents have autonomy** on implementation. The spec steers direction, the agent decides the code.
+The loop exits cleanly only when **the worklist is empty AND every spec's tests pass**.
 
-**Status transitions.** Humans move specs from Draft → Ready. The `/specd:audit` command manages Ready ↔ Implemented transitions — promoting clean specs to Implemented, demoting specs with new findings back to Ready.
+## Strict spec format
 
-**Future items:** Items marked with `(future)` are for reference only. Do not implement them — they belong to a later phase or another spec.
+Every spec file under `specs/` must conform to this format. `specs.js validate <name>`
+rejects malformed specs; `worklist.js add` refuses to queue items for specs that don't
+structurally validate (when `SPECD_REQUIRE_SPEC_FILE=1`).
 
-**Dependencies:** If a feature depends on another spec, check that spec's status. Only implement if the dependency is Ready or Implemented. Mark blocked features with "(blocked: specname)".
+```
+# <spec-name>
 
-**Cross-references:** When referencing another spec in the body (Out of scope, Dependencies, inline text), use a real markdown link with the correct relative path.
+## Overview
+<one paragraph: user, feature, why>
 
-**Work items** live in [specd_work_list.md](../specd_work_list.md). The `/specd:audit` command generates work items directly in specd_work_list.md based on gaps between specs and code. Humans and planning agents can also write directly to specd_work_list.md during spec phase.
+## Specification
 
-## Status Legend
+### Behavior 1 — <short title>
 
-| Status      | Meaning                                                |
-| ----------- | ------------------------------------------------------ |
-| Draft       | Being specified — not ready for implementation         |
-| Ready       | Spec complete, ready for implementation                |
-| Implemented | Fully implemented                                      |
-| Deprecated  | Superseded by another spec — kept for legacy reference |
+**Description:** <one sentence — WHAT, not HOW; ≤ 280 chars>
 
----
+**Test:**
+- run: `<shell command>`
+- stdin: <optional>
+- stdout: `<exact>`               or stdout_contains: `<substring>`
+- stderr: `<exact>`               or stderr_contains: `<substring>`
+- exit: <integer>
 
-## Foundation
+**Example:** <optional human-readable I/O>
 
-| Spec | Status | Description |
-|------|--------|-------------|
-| [example-spec](example-spec.md) | Draft | Example spec showing the format |
+### Behavior 2 — ...
 
-<!-- Add your foundation specs here -->
+## Constraints (optional)
+- <how-level: language, libraries, patterns>
+```
 
-## Core
+See [example-spec.md](example-spec.md) for a complete worked example.
 
-| Spec | Status | Description |
-|------|--------|-------------|
+## What changed in 0.2.0
 
-<!-- Add your core feature specs here -->
+- The Draft/Ready/Implemented status flag is **gone**. Items only exist in the worklist
+  when you've approved them — presence IS the approval gate.
+- Markdown worklist (`specd_work_list.md`) was replaced by **structured JSON owned by
+  `worklist.js`** with stable ids, atomic writes, dependency validation, and an attempts
+  cap on failed items.
+- Implement is no longer a slash command — the **orchestrator** owns the loop.
+- Audit is now mechanical: `specs.js test` runs the Test field from each behavior.
 
-## Future
+## Index
 
-| Spec | Status | Description |
-|------|--------|-------------|
+| Spec | Description |
+|------|-------------|
+| [example-spec](example-spec.md) | Annotated example (delete after drafting real specs) |
 
-<!-- Add your future/planned specs here -->
+<!-- Add your specs here. specd does NOT require any particular categorization; group however helps you read them. -->

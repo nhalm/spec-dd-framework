@@ -1,12 +1,4 @@
-import {
-  readFileSync,
-  writeFileSync,
-  mkdirSync,
-  existsSync,
-  unlinkSync,
-  chmodSync,
-  statSync,
-} from "node:fs";
+import { readFileSync, writeFileSync, mkdirSync, existsSync, unlinkSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { createHash } from "node:crypto";
 import {
@@ -58,6 +50,35 @@ function ensureDir(filePath) {
   mkdirSync(dirname(filePath), { recursive: true });
 }
 
+// Local-only files the user should never commit. Kept in one place so `init` and `update`
+// both ensure they're gitignored. The deterministic-loop additions (.specd-loop.*,
+// specd_loop_events.jsonl, .specd-approvals/) get added on update for existing users.
+const GITIGNORE_ENTRIES = [
+  "specd_work_list.json",
+  "specd_work_list.json.bak",
+  "specd_review.json",
+  "specd_review.json.bak",
+  "specd_loop_events.jsonl",
+  ".specd-loop.log",
+  ".specd-loop.log.*",
+  ".specd-loop.pid",
+  ".specd-loop.status.json",
+  ".specd-loop.status.json.tmp",
+  ".specd-approvals/",
+];
+
+function ensureGitignore(targetDir, messages) {
+  const gitignorePath = join(targetDir, ".gitignore");
+  const existing = existsSync(gitignorePath) ? readFileSync(gitignorePath, "utf-8") : "";
+  const lines = existing.split("\n");
+  const missing = GITIGNORE_ENTRIES.filter((entry) => !lines.includes(entry));
+  if (missing.length === 0) return;
+  const suffix = existing.endsWith("\n") || existing === "" ? "" : "\n";
+  const block = `${suffix}\n# specd local tracking (not committed)\n${missing.join("\n")}\n`;
+  writeFileSync(gitignorePath, existing + block);
+  messages.push(`  UPDATE  .gitignore (added ${missing.length} specd entries)`);
+}
+
 export function init(targetDir, templatesDir, { projectName, description }) {
   let copied = 0;
   let skipped = 0;
@@ -82,22 +103,7 @@ export function init(targetDir, templatesDir, { projectName, description }) {
     copied++;
   }
 
-  const loopPath = join(targetDir, "loop.sh");
-  if (existsSync(loopPath)) {
-    chmodSync(loopPath, 0o755);
-  }
-
-  // Ensure local-only files are gitignored
-  const gitignorePath = join(targetDir, ".gitignore");
-  const gitignoreEntries = ["specd_work_list.md", "specd_review.md"];
-  const existing = existsSync(gitignorePath) ? readFileSync(gitignorePath, "utf-8") : "";
-  const missing = gitignoreEntries.filter((entry) => !existing.split("\n").includes(entry));
-  if (missing.length > 0) {
-    const suffix = existing.endsWith("\n") || existing === "" ? "" : "\n";
-    const block = `${suffix}\n# specd local tracking (not committed)\n${missing.join("\n")}\n`;
-    writeFileSync(gitignorePath, existing + block);
-    messages.push("  UPDATE  .gitignore (added specd tracking files)");
-  }
+  ensureGitignore(targetDir, messages);
 
   // Save .specd with version and checksums
   const checksums = {};
@@ -275,10 +281,8 @@ export function update(targetDir, templatesDir, { dryRun = false, overwrite = fa
   }
 
   if (!dryRun && conflicts.length === 0) {
-    const loopPath = join(targetDir, "loop.sh");
-    if (existsSync(loopPath)) {
-      chmodSync(loopPath, 0o755);
-    }
+    // Keep the gitignore aligned for existing users picking up the deterministic-loop additions.
+    ensureGitignore(targetDir, messages);
 
     // Recompute and save checksums for all files
     for (const dest of ALL_FILES) {
@@ -331,21 +335,6 @@ export function doctor(targetDir) {
   }
 
   messages.push("");
-
-  const loopPath = join(targetDir, "loop.sh");
-  if (existsSync(loopPath)) {
-    const stats = statSync(loopPath);
-    if (stats.mode & 0o100) {
-      messages.push("  PASS  loop.sh is executable");
-      pass++;
-    } else {
-      messages.push("  FAIL  loop.sh is executable");
-      fail++;
-    }
-  } else {
-    messages.push("  FAIL  loop.sh is executable");
-    fail++;
-  }
 
   const specdFile = join(targetDir, SPECD_FILE);
   if (existsSync(specdFile)) {
