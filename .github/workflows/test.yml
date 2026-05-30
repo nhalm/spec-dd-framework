@@ -16,8 +16,13 @@ jobs:
           node-version-file: package.json
           cache: npm
       - name: Install dependencies
-        run: npm ci --no-audit --no-fund --prefer-offline
-        timeout-minutes: 5
+        # --ignore-scripts skips postinstalls that download native binaries via
+        # prebuild-install. Those fetches from GitHub Releases were timing out
+        # the install step. Our tests are pure JS — vitest, eslint, prettier
+        # don't need native binaries — and CI doesn't need lefthook's git hooks
+        # (the workflow runs the same checks directly).
+        run: npm ci --no-audit --no-fund --prefer-offline --ignore-scripts
+        timeout-minutes: 10
       - run: make lint
       - run: make fmt
       - run: make test
