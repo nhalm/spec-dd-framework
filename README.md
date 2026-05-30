@@ -4,39 +4,39 @@
 [![GitHub Release](https://img.shields.io/github/v/release/nhalm/specd)](https://github.com/nhalm/specd/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-A framework for building software with AI agents using spec-driven development. You describe what you want to build, Claude writes the specifications, and agents autonomously decide how to implement it — then audit their own work against the specs.
+An autonomous spec-driven coding loop for [Claude Code](https://docs.anthropic.com/en/docs/claude-code). You write specs with executable tests, the loop drains them through fresh `claude --bg` sessions one work item at a time, and audits its own work by running each spec's tests against the code. The loop exits cleanly only when the worklist is empty AND every spec's tests pass.
 
-Built for [Claude Code](https://docs.anthropic.com/en/docs/claude-code).
+The system invariant: **deterministic control flow, fuzzy work**. Picking, clearing, validating, deciding "done" — all plain Node code. Writing code, decomposing specs, judging spec quality — the LLM.
 
-## What This Is
+## What this is
 
 Most AI coding workflows are conversational — you prompt, the agent codes, you course-correct in real time. That works for small tasks but breaks down on larger projects where requirements are complex and context gets lost between sessions.
 
-specd replaces that with a document-driven workflow:
+specd replaces that with a document-driven, deterministic loop:
 
-1. **You describe what to build** — in a planning session with Claude, which writes the specs for you
-2. **Agents implement autonomously** — a loop picks work items one at a time, implements them, commits, and moves on
-3. **Agents audit their own work** — a separate audit phase compares code against specs and surfaces findings
-4. **You make the judgment calls** — ambiguous findings land in `specd_review.md` for your decision before becoming work items
+1. **You describe what to build** — in a planning session with Claude, which writes the spec (with runnable test contracts for each behavior).
+2. **The orchestrator drains the worklist** — one fresh `claude --bg` session per work item. Items can't enter the worklist without your explicit approval at the end of a planning session.
+3. **The audit phase runs your specs' tests** — failing behaviors auto-queue as work items. There's no fuzzy "does the code match the spec" judgment — `specs.js test` literally runs the test commands the spec declares.
+4. **You make the judgment calls** — ambiguous findings land in `specd_review.json` for your decision before becoming work items.
 
-The specs are the source of truth. If code contradicts a spec, the code is wrong. Agents never change specs — only humans do.
+Specs are the source of truth and they ARE executable contracts. Each `### Behavior N` block carries a runnable test (`run:` shell command, `stdout`/`exit` expectations); the audit phase runs them.
 
-## Why Specs and Loops
+## Why this design
 
-AI agents are good at writing code but bad at deciding what to write. Without a clear target, they drift — adding features you didn't ask for, making architectural decisions you'd disagree with, or solving the wrong problem entirely. The longer they run autonomously, the worse this gets.
+AI agents are good at writing code but bad at deciding what to write. Without a clear target, they drift. The longer they run autonomously, the worse this gets — and any LLM step has ~10% small judgment errors that compound multiplicatively across long chains.
 
-Specs solve the direction problem. A spec is a short document that pins down behavior, contracts, and interfaces for one component. It's specific enough that there's no ambiguity about what "done" looks like, but says nothing about implementation. The agent can't drift because the spec is the acceptance criteria — the audit phase checks code against it and flags anything that doesn't match.
+**Specs solve the direction problem.** Each behavior is one sentence + one runnable test. The agent can't drift because the spec is mechanically checkable — `specs.js test` doesn't ask the model whether the code matches, it runs the contract.
 
-The loop solves the continuity problem. In a normal conversation, context resets every session. You re-explain what you're building, where you left off, what's already done. With a loop, the agent reads the work list, picks the next item, reads the relevant spec for full context, implements, validates, and records what it did. The next iteration picks up exactly where the last one left off — no context loss, no re-explaining.
+**The loop solves the continuity problem.** Each work item is implemented in a fresh `claude --bg` session — full context every time, no accumulation, no drift across iterations. The orchestrator drives picking, blocker-clearing, and verdict parsing in deterministic code.
 
-The review file (`specd_review.md`) solves the judgment problem. Not everything is black and white. When the audit finds a mismatch between spec and code but can't tell which one is wrong, it doesn't guess — it writes the finding to `specd_review.md` and moves on. You review these between loop runs: delete the ones you disagree with, leave the rest. On the next cycle, remaining items become work items. This is the human-in-the-loop — you're not reviewing every line of code, you're only making the calls that require human judgment.
+**The review file solves the judgment problem.** Not everything is black and white. When the audit finds a mismatch the tests don't catch, it writes a finding to `specd_review.json` and moves on. You answer it with `node .claude/scripts/review.js decide <id> "..."`. The next loop pass turns your decision into a work item.
 
-Together they create a feedback cycle: specs steer, agents implement, audits verify, and ambiguous findings route to you. Each loop cycle either makes progress or surfaces a decision. The system handles the straightforward work autonomously and escalates the rest.
+Together: specs steer, the orchestrator implements, executable tests verify, ambiguous findings route to you. Each cycle either makes progress or surfaces a decision.
 
 ## Prerequisites
 
-- [Node.js](https://nodejs.org/) (v18+) with npm/npx
-- [Claude Code](https://docs.anthropic.com/en/docs/claude-code) CLI installed and authenticated
+- [Node.js](https://nodejs.org/) (v24+, see `.nvmrc`)
+- [Claude Code](https://docs.anthropic.com/en/docs/claude-code) CLI installed and authenticated. The loop uses `claude --bg` so it stays on subscription billing (Pro/Team/Max).
 
 ## Quickstart
 
@@ -45,189 +45,225 @@ cd your-project
 npx specd init
 ```
 
-This prompts for your project name and description, then creates the following in your repo:
+This prompts for your project name and description, then creates:
 
-- `AGENTS.md` — Framework instructions for agents (spec authority, audit discipline, loop system). Updated automatically by `specd update`.
-- `PROJECT.md` — Your project-specific guidelines (build commands, conventions). Yours to customize — never overwritten.
-- `specs/` — Spec directory with an annotated example
-- `.claude/commands/specd/` — Slash commands for the autonomous loop
-- `specd_work_list.md`, `specd_review.md` — Work tracking files (gitignored)
-- `loop.sh` — The autonomous implementation loop
+- `AGENTS.md` — Framework instructions for agents (spec authority, audit discipline, loop system).
+- `PROJECT.md` — Your project-specific guidelines (build commands, conventions).
+- `specs/` — Spec directory with a worked example (`example-spec.md`).
+- `.claude/commands/specd/` — Slash commands: `plan`, `audit`, `review-intake`, `loop`.
+- `.claude/scripts/` — The deterministic engine: `worklist.js`, `review.js`, `specs.js`, `specd-loop.mjs`.
+- `.claude/settings.json` — Worktree isolation config.
+- `specd_work_list.json`, `specd_review.json` — State files (gitignored).
+- `.gitignore` updates for all the local state files.
 
-Next, open Claude Code and run the interactive setup:
+Then plan your first feature inside Claude Code:
 
-```bash
+```
 claude
-> /specd:setup
+> /specd:plan auth
 ```
 
-Setup analyzes your codebase and walks you through customizing `PROJECT.md` with your build commands and conventions, configuring the validation steps agents run after each implementation (tests, linting, type checking), and writing your first spec.
+Discuss the feature, iterate on the spec, and approve the decomposition at the end. Items land in `specd_work_list.json`.
 
-### Installing from source
-
-If you prefer to install globally from source:
+Then drain them:
 
 ```bash
-git clone git@github.com:nhalm/specd.git
-cd specd && make install
+specd loop start
 ```
 
-`make install` runs `npm install` and `npm link`, making the `specd` command available globally. Other make targets: `make check` (lint + format), `make test` (vitest), `make fix` (auto-fix).
+The loop runs in the background. Monitor with `specd loop status` and `specd loop logs --follow`.
 
-## How It Works In Practice
-
-The key idea: **specs define what to build, not how to build it.** You describe behavior, contracts, and interfaces. Agents decide the implementation — file structure, function names, patterns, everything. This is what makes autonomous implementation possible: the spec is a target to hit, not a script to follow.
-
-You don't write specs by hand. You talk to Claude:
+## CLI reference
 
 ```
-> /specd:plan
+specd <command> [options]
+
+Commands:
+  init   [dir]            Initialize a project with the specd framework
+  update [dir]            Update framework-owned files to the latest version
+  doctor [dir]            Check that all expected files are in place
+  loop <verb> [options]   Drive the autonomous coding loop
+
+Loop verbs:
+  specd loop start                   Start the orchestrator (background by default; --foreground for inline)
+  specd loop run-once                Foreground + single iteration
+  specd loop status                  Show heartbeat, current item, cycle
+  specd loop stop                    Send SIGTERM (clean shutdown)
+  specd loop cost [--today]          Token + estimated dollar cost from events.jsonl
+  specd loop logs [--tail N] [--follow]
+
+Common options:
+  --dry-run, --overwrite, --foreground, --once, --skip-audit
+  --help, -h, --version, -v
 ```
 
-Then describe what you want in plain language:
+## How the loop works
 
-- "I need a REST API for managing user accounts with email/password auth"
-- "Add a caching layer in front of the database queries — Redis-based, with TTL per entity type"
-- "The payment webhook handler is getting too complex, I want to refactor it into a state machine"
+```
+                  ┌───────────────────────────────────────┐
+                  │  Node orchestrator (specd loop)        │ all deterministic
+                  │  owns the loop + all bookkeeping       │
+                  └───────────────────────────────────────┘
+   pick   ── node .claude/scripts/worklist.js next       (deterministic claim)
+                  │
+   implement ── claude --bg <prompt with item>           (fresh context; nonce-required verdict)
+                  │
+   read result ── parse session JSONL transcript         (no markers grepped — structured field)
+                  │
+   classify ── verdict + git HEAD cross-check
+                  │
+       done|noop → worklist.js done <id>
+       failed    → worklist.js fail <id>  (attempts++; SURFACED at cap)
+                  │
+                  └─▶ next iteration, or after queue drains:
+                       audit ── specs.js test in parallel across all specs
+                                 failing behaviors → worklist.js add
+                                 if any added → next cycle; else exit
+```
 
-Claude studies your codebase, asks clarifying questions about edge cases and design decisions, then writes the spec. You review it, push back on things that don't seem right, and iterate. The conversation is where the real design happens — the spec is just the artifact that captures it.
+Three deliberate human gates:
 
-A good spec says things like "authentication endpoint returns a JWT with user ID and role claims, tokens expire after 1 hour, refresh tokens expire after 30 days." It does **not** say "create a file called `auth.js` with a function called `generateToken`." The agent figures out the how.
+1. **Plan approval** — items only enter the worklist when you approve `/specd:plan`.
+2. **Loop start** — `specd loop start` is your call.
+3. **Review decisions** — pending findings in `specd_review.json` block the loop until you answer.
 
-## Workflow
+Everything else is code.
+
+## Lifecycle in practice
 
 ### 1. Plan with Claude
 
-Run `/specd:plan` and describe what you want built. Claude writes the spec and breaks it into work items in `specd_work_list.md`:
-
-```markdown
-## my-feature v0.1
-
-- Add user authentication endpoint
-- Add password validation with bcrypt
-- Add JWT token generation (blocked: authentication endpoint)
-```
-
-Items marked `(blocked: reason)` are skipped until the blocker is resolved.
-
-When the spec is ready, change its status to **Ready** in `specs/README.md`. This signals to agents that they can start implementing.
+`/specd:plan <spec-name>` (in a Claude Code session). Discuss, iterate, the agent drafts `specs/<name>.md`, you approve the decomposition. The agent calls `worklist.js add` only at session end, only on explicit approval.
 
 ### 2. Run the loop
 
 ```bash
-./loop.sh
+specd loop start
 ```
 
-The loop runs autonomously. Each cycle has three phases:
+The orchestrator drains items one at a time. Each item gets a fresh `claude --bg` session (subscription-billed). Status: `specd loop status`. Cost: `specd loop cost`.
 
-```
-┌─────────────────────────────────────────────────────────┐
-│ Phase 1: Review Intake (Haiku)                          │
-│ Process specd_review.md → specd_work_list.md                   │
-├─────────────────────────────────────────────────────────┤
-│ Phase 2: Implementation (Sonnet)                        │
-│ Pick item → implement → validate → commit → repeat      │
-│ Until specd_work_list.md is empty or all items blocked   │
-├─────────────────────────────────────────────────────────┤
-│ Phase 3: Audit (Opus)                                   │
-│ Compare specs to code → write findings                  │
-│ Clean? → exit. New findings? → next cycle.              │
-└─────────────────────────────────────────────────────────┘
-```
+### 3. Audit (automatic at queue drain)
 
-The loop runs up to 5 cycles. It exits early if the audit finds nothing new or if a fatal error occurs (rate limit, API error, token limit). Each phase uses a different model — fast/cheap for review intake, balanced for implementation, strongest for audit. Models are configurable at the top of `loop.sh`.
+`specs.js test` runs every Behavior's Test against the code in parallel across all specs. Failing behaviors become work items with the exact failure reason. The loop runs the next cycle automatically. Exit when worklist is empty AND all tests pass.
 
-Flags:
+### 4. Review
 
-- `./loop.sh` — Standard: implement + audit Ready specs
-- `./loop.sh --skip-audit` — Implement only, no audit phase
-- `./loop.sh --full-audit` — Audit both Ready and Implemented specs (catches regressions)
-
-### 3. Review findings
-
-After the loop runs, check two files:
-
-- **`specd_review.md`** — Ambiguous findings the audit wasn't sure about. Read each one, delete any you disagree with, and leave the rest. On the next loop cycle, `/specd:review-intake` converts remaining items into work items in `specd_work_list.md`.
-
-If new work items were generated, run the loop again. When the audit comes back clean and `specd_work_list.md` is empty, your spec is implemented.
-
-### 4. Iterate
-
-Need to change something? Run `/specd:plan` again. Describe what's wrong or what you want different — Claude updates the spec, bumps the version, and generates new work items. Run the loop again.
-
-This is the cycle: **plan → loop → review → plan**. You steer with natural language, specs capture the decisions, agents do the implementation.
-
-## Work Tracking
-
-specd uses two files to track work. You'll see them referenced throughout the commands and loop output.
-
-**`specd_work_list.md`** is the todo list. Every remaining work item lives here — spec implementations, audit findings, and promoted review items. Agents read this at the start of each iteration to pick the next task. When an item is done, the agent removes it. This file is intentionally kept small so agents can read it in full.
-
-**`specd_review.md`** is the human decision queue. When the audit finds something ambiguous — it's not sure if the code or the spec is wrong — it writes the finding here instead of creating a work item. You review these between loop runs: delete findings you disagree with, leave the rest. On the next cycle, `/specd:review-intake` converts remaining items into work items in `specd_work_list.md`.
-
-## Spec Lifecycle
-
-```
-Draft → Ready → Implemented
-  ↑              ↓ (regression found)
-  └──── Ready ←──┘ (version bumped)
-```
-
-- **Draft** — Being written. Agents ignore it.
-- **Ready** — Complete. Agents can implement and audit against it.
-- **Implemented** — Code matches spec. A full audit (`--full-audit`) can demote it back to Ready if regressions are found, with a version bump and new work items.
-
-You control Draft → Ready. The audit system manages Ready ↔ Implemented.
-
-## Command Reference
-
-All commands are available as slash commands inside Claude Code (e.g., `/specd:plan`), or can be piped from the terminal:
+If the audit found an ambiguous finding (`specs.js test` passes but something is still off), it writes to `specd_review.json`. The loop stops and waits. You answer with:
 
 ```bash
-cat .claude/commands/specd/plan.md | claude
+node .claude/scripts/review.js list
+node .claude/scripts/review.js decide auth-r1 "A, but only for tokens <7d old"
 ```
 
-| Command                | Purpose                                                                                                                                                             |
-| ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `/specd:setup`         | Interactive onboarding. Customizes PROJECT.md, validation steps, and helps write your first spec. Run once after `specd init`.                                      |
-| `/specd:plan`          | Collaborative planning session. Describe what you want, Claude writes the spec and work items. The primary way to create and update specs.                          |
-| `/specd:implement`     | Picks one unblocked item from `specd_work_list.md`, implements it, validates, and commits. The loop runs this repeatedly.                                           |
-| `/specd:audit`         | Audits Ready specs against code. Writes confirmed issues to `specd_work_list.md`, ambiguous findings to `specd_review.md`, and promotes clean specs to Implemented. |
-| `/specd:full-audit`    | Same as audit but also checks Implemented specs for regressions. Demotes specs with issues back to Ready.                                                           |
-| `/specd:review-intake` | Converts `specd_review.md` items into work items in `specd_work_list.md`. Runs automatically at the start of each loop cycle.                                       |
+Then re-run `specd loop start`. The `/specd:review-intake` phase turns your decision into work items.
 
-## Writing Good Specs
+## Strict spec format
 
-Specs are written by `/specd:plan`, but it helps to know what makes a good one. A spec defines **what** a component does and **why**, not **how** to implement it:
+Specs in `specs/<name>.md` must conform to this format — `specs.js validate` enforces it:
 
-- **Overview** — What and why in 1-2 sentences
-- **Scope** — What it handles and what it explicitly doesn't
-- **Dependencies** — Other specs this builds on
-- **Specification** — Behavior, contracts, interfaces — detailed enough that an agent can implement without asking questions
-  Don't include implementation details (file names, function signatures, variable names). The agent has autonomy on the how. See `specs/example-spec.md` for the full annotated format.
+```markdown
+# auth
+
+## Overview
+
+One paragraph: user, feature, why.
+
+## Specification
+
+### Behavior 1 — login endpoint
+
+**Description:** POST /login with email + password returns a JWT on success and 401 on failure.
+
+**Test:**
+
+- run: `curl -s -X POST localhost:3000/login -d '{"email":"a@b","password":"pw"}'`
+- stdout_contains: `"token"`
+- exit: 0
+
+**Example:** valid creds → `{"token":"eyJ..."}`
+
+### Behavior 2 — ...
+
+## Constraints (optional)
+
+- JWT signed with HS256; 1h expiry.
+```
+
+See `templates/specs/example-spec.md` for a full worked example.
+
+## File ownership
+
+| File / directory              | Owner   | Update behavior                            |
+| ----------------------------- | ------- | ------------------------------------------ |
+| `AGENTS.md`                   | specd   | Overwritten on `specd update`              |
+| `.claude/commands/specd/*.md` | specd   | Overwritten on `specd update`              |
+| `.claude/scripts/*.{js,mjs}`  | specd   | Overwritten on `specd update`              |
+| `.claude/settings.json`       | specd   | Overwritten on `specd update`              |
+| `PROJECT.md`                  | You     | Never overwritten                          |
+| `specs/*.md`                  | You     | Never overwritten                          |
+| `specs/README.md`             | You     | Created once (template), then yours        |
+| `specd_work_list.json`        | scripts | Created empty, never overwritten on update |
+| `specd_review.json`           | scripts | Created empty, never overwritten on update |
+| `.specd-approvals/*.json`     | scripts | HMAC-signed; do not edit by hand           |
+| `.specd-loop.*`               | scripts | Orchestrator state                         |
+| `specd_loop_events.jsonl`     | scripts | Per-item cost log (append-only)            |
+
+## Determinism story
+
+| Operation                                | Mechanism                                                          | LLM?                                   |
+| ---------------------------------------- | ------------------------------------------------------------------ | -------------------------------------- |
+| Pick next work item                      | `worklist.js next`                                                 | No                                     |
+| Atomic claim (multi-orchestrator safety) | lockfile + `in_progress` PID liveness                              | No                                     |
+| Mark done / clear blockers               | `worklist.js done` (idempotent)                                    | No                                     |
+| Spec structure                           | `specs.js validate`                                                | No                                     |
+| Spec behavior conformance                | `specs.js test` — actually runs the Test                           | No                                     |
+| Spec content quality                     | `specs.js review` — separate LLM, fixed rubric, structured verdict | LLM, bounded                           |
+| Implement the work item                  | `claude --bg` worker                                               | **Yes — the legitimate creative work** |
+| Verdict transmission                     | nonce + balanced-brace parser + attempts cap                       | Bounded                                |
+| Git verdict cross-check (noop ↔ commit)  | git HEAD before/after                                              | No                                     |
+| Termination                              | queue empty + audit clean                                          | No                                     |
+
+## Hardening
+
+Code-level defenses (HMAC-signed approval markers, env scrubbing, symlink-resistant writes, verdict nonce, identity check on stop, …) are documented in [HARDENING.md](HARDENING.md). The model is NOT a security boundary — for unattended production use, the same doc walks through the OS-level mitigations (dedicated user, sandbox-exec / bwrap, worktree isolation re-enabled).
 
 ## Updating
 
 ```bash
-npx specd@latest update
+specd update
 ```
 
-Overwrites framework-owned files (`AGENTS.md`, `loop.sh`, command prompts) without touching files you've customized (`PROJECT.md`, specs).
+Overwrites framework-owned files without touching your spec files, your `PROJECT.md`, or your state. If you've modified any framework file locally, the update fails until you re-run with `--overwrite`.
 
-**File ownership:**
-
-| File                       | Owner                   | On update                              |
-| -------------------------- | ----------------------- | -------------------------------------- |
-| `AGENTS.md`                | specd framework         | Overwritten with latest                |
-| `PROJECT.md`               | You                     | Never touched                          |
-| `loop.sh`                  | specd framework         | Overwritten with latest                |
-| `.claude/commands/specd/*` | specd framework         | Overwritten with latest                |
-| `specs/*`                  | You                     | Never touched                          |
-| `specd_work_list.md`       | Shared (header updated) | Header refreshed, your items preserved |
-| `specd_review.md`          | You                     | Never touched                          |
-
-To verify your installation:
+## Testing
 
 ```bash
-npx specd doctor
+make test    # vitest — 107 unit + integration tests
+make check   # lint + format
+make fix     # auto-fix lint and formatting
 ```
+
+## Cost expectations
+
+At Sonnet rates with typical decomposition, expect roughly $0.30–$0.70 per implement turn, $3–$15 per loop run (15–20 items). Configure `SPECD_PRICE_<MODEL>_IN/OUT` env vars to enable cost estimation; `specd loop cost` summarizes spend by day, month, model, and verdict.
+
+## Status
+
+This is version `0.2.0`, the deterministic-loop rewrite. Earlier versions used a bash `loop.sh` + markdown worklist; that design is fully retired (see `DETERMINISTIC_WORKLIST_DESIGN.md` for the architecture history and three rounds of red-team findings).
+
+What's confirmed working:
+
+- ✅ Subscription-billed via `claude --bg` (no API key required)
+- ✅ Fresh context per item
+- ✅ Deterministic pick / done / blocker clear
+- ✅ Closed audit-on-drain loop (regression → caught → queued → fixed → confirmed)
+- ✅ HMAC-signed plan-approval gate
+- ✅ Verdict nonce + prompt-injection defenses
+- ✅ Cost tracking + budget gating
+- ✅ Crash + restart recovery
+- ✅ 107 unit tests pass
+
+## License
+
+MIT

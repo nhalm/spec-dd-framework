@@ -1,42 +1,99 @@
 PROJECT.md
 
-## Spec Authority
+## Spec authority
 
 **Specs are prescriptive, not descriptive.** The spec defines what code MUST do.
 
 - **Spec is source of truth.** If code contradicts the spec, the code is wrong — refactor it.
-- **Always read the full spec before implementing a work item.** The spec is the source of truth; don't rely on memory of a previous read.
-- **Don't build on broken foundations.** If existing code uses the wrong model (e.g., wrong ID scheme, wrong data flow), fix it first. Don't add new features on top of incorrect code.
-- **Spec index:** `specs/README.md` lists all specifications organized by phase. Only specs with status "Ready" should be implemented.
+- **Always read the full spec before implementing a work item.** Items are summaries; the spec has the detail.
+- **Don't build on broken foundations.** If existing code uses the wrong model (e.g., wrong ID scheme, wrong data flow), fix it first.
+- **No spec status flag.** Specs are "active" if items reference them in the worklist. Presence in the worklist = approval to implement.
 
-## Audit Discipline
+## Strict spec format
 
-**Zero findings is a valid outcome.** An audit that confirms correctness is successful — do not manufacture findings to justify the work.
+Every spec under `specs/` must validate against the strict format below — `specs.js validate <name>` enforces it, and `worklist.js add` refuses items whose spec doesn't validate (when `SPECD_REQUIRE_SPEC_FILE=1`).
 
-**The bar for a finding is: will this cause a bug in production?** Not "could this theoretically be a problem under unlikely conditions" — will it actually break?
+```
+# <spec-name>
 
-Before reporting a finding:
-- **Read the actual code, not just the spec.** Findings based on spec text alone are unreliable. The code is the ground truth — if the code is correct, there is no finding.
-- **Check if it's actually reachable.** Trace the code path. If it requires multiple unlikely conditions to trigger, and existing safety nets (timeouts, cost ceilings, human abort) bound the impact, it's not a finding.
-- **Check if the spec section is prescriptive.** "Notes", "Resolved questions", and "Design decisions" sections are commentary, not requirements. Don't flag unimplemented commentary.
-- **Check if behavior is handled by LLM choice.** If the spec describes behavior that the LLM naturally produces via its tool set and prompt (e.g., choosing not to orchestrate for simple tasks), the absence of a dedicated code path is not a gap.
-- **Don't flag missing safety nets when other safety nets exist.** A missing timeout is low-priority when cost ceilings and human abort are available.
+## Overview
+<one paragraph — user, feature, why>
 
-## Loop System
+## Specification
 
-The autonomous loop is defined in `loop.sh`. Commands live in `.claude/commands/`:
+### Behavior 1 — <short title>
 
-| Command          | Purpose                                                                        |
-| ---------------- | ------------------------------------------------------------------------------ |
-| `/specd:implement`     | Pick one unblocked work item, implement it, validate, record completion        |
-| `/specd:audit`         | 3-phase spec-vs-code audit. Writes findings to specd_work_list.md and specd_review.md |
-| `/specd:review-intake` | Process specd_review.md items into specd_work_list.md                                 |
-| `/specd:full-audit`    | Like audit but covers Ready AND Implemented specs — demotes Implemented specs with findings |
+**Description:** <one sentence; WHAT, not HOW; ≤ 280 chars>
 
-## specd_work_list.md (Remaining Work)
+**Test:**
+- run: `<shell command>`
+- stdin: <optional>
+- stdout: `<exact>`               or stdout_contains: `<substring>`
+- stderr: `<exact>`               or stderr_contains: `<substring>`
+- exit: <integer>
 
-The single execution queue for all work — spec implementations, audit findings, and promoted review items. **Read it in full** at the start of each iteration — it is kept small. Pick an unblocked item, implement it, then remove it from the list.
+**Example:** <optional>
 
-## specd_review.md (Human Decisions)
+### Behavior 2 — ...
 
-Ambiguous findings from audits that need human judgment. Items sit here until the human reviews them. On next loop start, `/specd:review-intake` promotes remaining items to specd_work_list.md (human deletes items they disagree with before restarting).
+## Constraints (optional)
+- <how-level rules: language, libraries, patterns>
+```
+
+Each behavior's **Test** is a runnable shell contract. The audit phase executes them with `specs.js test <name>` and queues failures as work items. There is no separate "is the code right?" judgment — the test is the contract.
+
+## Audit discipline
+
+The audit phase is **mechanical first, judgment second**:
+
+1. `specs.js test <spec>` runs every Behavior's Test. Failing behaviors → `worklist.js add` with the structured failure reason.
+2. **Only then** consider non-mechanical findings. The bar is high: the code does something genuinely broken that the test doesn't catch, OR the spec and code disagree on something the test doesn't verify.
+
+**Zero findings is a valid outcome.** Manufacturing findings to justify audit work is worse than reporting clean.
+
+Before reporting a non-mechanical finding:
+- **Read the actual code**, not just the spec. The code is the ground truth.
+- **Check if it's actually reachable.** Trace the code path.
+- **Check if the spec section is prescriptive.** Notes / Resolved-questions / Design-decisions sections are commentary, not requirements.
+- **Don't flag missing safety nets when other safety nets exist.**
+
+## Loop system
+
+The autonomous loop is `specd loop` — a Node orchestrator that:
+
+1. Picks one item from `specd_work_list.json` via deterministic code.
+2. Dispatches a fresh `claude --bg` session with the item inlined.
+3. Parses a nonce-verified verdict from the session's JSONL transcript.
+4. Calls `worklist.js done`/`fail` based on the structured outcome.
+5. After the queue drains, runs `specs.js test` on every spec in parallel; failing behaviors queue as fixes.
+6. Exits only when the worklist is empty AND every spec's tests pass.
+
+| Command | Purpose |
+| --- | --- |
+| `/specd:plan <name>` | Draft/update a spec, decompose into items, queue on approval |
+| `/specd:audit [name]` | Run `specs.js test`; queue failures; surface ambiguous findings to review.js |
+| `/specd:review-intake` | Process decided review findings into work items |
+| `/specd:loop` | Launch the orchestrator from inside a Claude Code session (status/monitoring helpers) |
+| `specd loop start` | Same orchestrator, launched from the terminal |
+
+## State files (gitignored)
+
+| File | What it holds |
+| --- | --- |
+| `specd_work_list.json` | Work items: `{id, spec, text, blocked_by, attempts, in_progress}` |
+| `specd_review.json` | Findings awaiting human decision: `{id, spec, finding, decision, status}` |
+| `.specd-approvals/<name>.json` | HMAC-signed approval markers — spec passed `specs.js review` |
+| `.specd-loop.{pid,log,status.json}` | Orchestrator process state |
+| `specd_loop_events.jsonl` | Per-item cost + token log (one line per dispatch) |
+
+All of these are owned by the scripts under `.claude/scripts/`. **Do not edit them by hand.**
+
+## Determinism principle
+
+The control flow — what runs next, what cleared, what's "done", when to stop — is plain
+Node code. The LLM does only the inherently fuzzy work: writing code, decomposing specs,
+judging spec quality, interpreting a human's review decision.
+
+This split keeps the bookkeeping reliable at scale. Reliability degrades multiplicatively
+with the number of LLM-driven steps; pulling them out of the model is what lets the loop
+process dozens of items unattended.

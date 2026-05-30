@@ -1,111 +1,84 @@
-Study AGENTS.md for guidelines.
-Study specs/README.md to find all specs and their statuses.
+---
+description: Run each spec's tests against code; queue failing behaviors as work items, ambiguous findings as review decisions.
+argument-hint: [spec-name]
+---
 
-Your task is to audit Ready specs against code, then write findings to the appropriate files.
+# Specs available
 
-## Scope
+!`node .claude/scripts/specs.js list 2>&1`
 
-Only audit specs with status **Ready**. Skip Implemented, Draft, and Deprecated specs entirely.
+# Currently active items
 
-## What counts as a finding
+!`node .claude/scripts/worklist.js list 2>&1`
 
-Only flag things that are **functionally wrong** — broken behavior, missing features, incorrect data, wrong types at system boundaries. The bar is high:
+# Pending review findings
 
-- Code produces wrong results or crashes → finding
-- A spec-required feature is missing entirely → finding
-- Types are wrong at API boundaries causing runtime errors → finding
-- Code works correctly but uses a different pattern than the spec suggests → NOT a finding
-- Spec wording doesn't perfectly match implementation details → NOT a finding
-- Cosmetic differences (naming, formatting, ordering) → NOT a finding
-- Documentation gaps in the spec → NOT a finding
+!`node .claude/scripts/review.js pending 2>&1 | head -20`
 
-## Process
+# Instructions to the agent
 
-Work through each Ready spec sequentially. For each spec:
+You are running the **audit** phase. With strict-format specs, most audit work is mechanical: `specs.js test` literally runs each Behavior's test against the code and tells you exactly which behaviors fail.
 
-### Step 1: Gather
+## Workflow
 
-Launch a research agent (model: Sonnet) to audit the spec against code. The agent:
+### Step 1 — run the deterministic tests
 
-1. Reads the spec body (Overview, Specification sections)
-2. Reads the code that implements it
-3. Reports findings: broken behavior, missing features, incorrect data handling. **Zero findings is a valid outcome.**
+If a spec name was passed as `$1`, audit only it. Otherwise audit every spec in `specs/`.
 
-The agent applies the "what counts as a finding" bar above and the Audit Discipline guidelines in AGENTS.md. It does NOT write or modify any files.
-
-### Step 2: Validate
-
-When the agent returns findings, **you validate each one yourself**:
-
-1. Read the actual code for each finding — confirm or reject the claim against the source
-2. Cross-check against specd_work_list.md to avoid duplicates
-3. For each finding, answer: "Is the code actually broken or producing wrong results?" If no, reject the finding.
-4. Categorize each confirmed finding:
-   - **Code is broken / produces wrong results** → specd_work_list.md item
-   - **Spec needs to prescribe new behavior** → spec update candidate
-   - **Ambiguous, needs human** → specd_review.md item
-   - **Already known / in progress / duplicate** → skip
-   - **Code works fine, just different from spec wording** → skip (do NOT flag)
-
-Validation is critical. Agent research is frequently wrong about exact field names, line numbers, parameter types, and other details. Verify every finding against actual code before writing.
-
-### Step 3: Write
-
-Write confirmed findings for this spec before moving to the next one.
-
-## Writing findings
-
-### specd_work_list.md
-
-Add concrete, actionable work items under `## spec-name` section headers. Each item must be a small, single unit of work. Add `(blocked: ...)` for items with dependencies.
-
-### Spec updates
-
-When the spec needs to prescribe genuinely new or changed behavior (NOT documentation fixes):
-
-1. Update the spec body with the corrected content
-2. Add corresponding work items to specd_work_list.md under the `## spec-name` section
-
-### specd_review.md
-
-For ambiguous findings where it's unclear whether code or spec is wrong:
-
-```markdown
-## spec-name
-
-**Finding:** Description of the mismatch
-**Code:** What the code does (file path, line)
-**Spec:** What the spec says
-**Options:**
-- A: First option
-- B: Second option
-**Recommendation:** What you think should happen
-**Decision:**
+For each spec:
+```
+node .claude/scripts/specs.js test <spec-name>
 ```
 
-Letter the options so the human can respond with just a letter, a letter plus clarification, or freeform text. Always leave `**Decision:**` blank — the human fills it in.
+This emits a structured JSON result with `{ allPass, results: [{ behavior, title, pass, reason }] }`.
 
-### Spec status transitions
+**For each failing behavior:** add a work item. The reason string already tells you exactly what's wrong (e.g. "stdout mismatch (got X, expected Y)" or "exit 0 ≠ expected 1"). Use it:
+```
+node .claude/scripts/worklist.js add --spec <spec> --text "Fix behavior <N> (<title>): <reason from test failure>"
+```
 
-After processing each spec:
+Print each returned id back to the user.
 
-- **Ready spec with NO findings** → Update status to "Implemented" in both the spec file and specs/README.md
-- **Ready spec with findings** → Status stays Ready (findings are in specd_work_list.md)
+### Step 2 — only THEN consider non-mechanical findings
 
-## Committing
+After all behavioral tests are run, ask yourself: is there anything else that's functionally wrong that the tests don't catch?
 
-After writing findings for each spec, commit all changed spec files and `specs/README.md` together in a single commit.
+The bar is HIGH. Most things you'd want to flag are either:
+- **A test that doesn't exist yet for an existing behavior** → that's a spec edit (add a Behavior), not an audit finding. Propose it to the user.
+- **Cosmetic / naming / pattern preference** → NOT a finding.
+- **"The spec could be more detailed"** → NOT a finding. Specs say WHAT; lack of detail is the spec saying "any way that passes the test is fine."
 
-**Do NOT commit `specd_work_list.md` or `specd_review.md`.** These are uncommitted working files — they must never be staged or included in any commit.
+Only flag a non-mechanical finding if:
+- The code does something genuinely broken that the test doesn't catch (the test is wrong or incomplete).
+- The spec and code disagree on something the test doesn't verify (data shape at an API boundary, side effect, etc.).
+
+For ambiguous non-mechanical findings (the spec might be wrong, or it's a tradeoff the human should decide):
+```
+node .claude/scripts/review.js add \
+  --spec <spec> \
+  --finding "<one-line summary>" \
+  --code "<file:line — what the code does>" \
+  --spec-says "<what the spec says>" \
+  --option "A: <option>" --option "B: <option>" \
+  --recommendation "<your suggestion>"
+```
+
+## Hard rules
+
+- Do NOT commit. Audit doesn't write code; it writes findings/items.
+- Do NOT edit specs (the spec might be wrong is a review finding, not an audit edit).
+- Do NOT flag what's already in the worklist (`list` is shown above; don't duplicate).
+- Do NOT skip running `specs.js test`. The tests are the source of truth for "does the code match the spec."
+- "No findings" is a valid and valuable outcome.
 
 ## Output
 
-After completing all specs, report a summary:
+At the end, report:
+- Specs audited (and their `specs.js test` pass/fail counts)
+- Work items added (with ids)
+- Review findings added (with ids)
+- "No findings" if the audit was clean
 
-- Number of findings per spec
-- Items added to specd_work_list.md
-- Items added to specd_review.md
-- Status transitions made
+## Why this is mechanical
 
-Output `AUDIT_COMPLETE: true` when done.
-Output `AUDIT_CLEAN: true` if no new items were added to specd_work_list.md (audit found nothing or only specd_review.md items).
+The Test field on each Behavior in the strict spec format means audit doesn't need to interpret prose — it runs the test. A failing test is a finding. A passing test is "spec satisfied." This collapses most of audit from LLM judgment into deterministic shell exit codes.
