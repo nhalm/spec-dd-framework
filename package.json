@@ -10,6 +10,9 @@
     "src/",
     "templates/"
   ],
+  "publishConfig": {
+    "access": "public"
+  },
   "keywords": [
     "ai",
     "agents",
