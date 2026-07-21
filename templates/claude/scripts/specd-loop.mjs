@@ -570,9 +570,12 @@ function findSessionJsonl(fullSessionId) {
   // verify the resolved JSONL file's sibling `*.cwd` or session record matches if
   // available. For typical paths this is a no-op.
   const encoded = cfg.cwd.replaceAll("/", "-");
-  const direct = join(homedir(), ".claude", "projects", encoded, `${fullSessionId}.jsonl`);
+  // Workers inherit CLAUDE_CONFIG_DIR, so transcripts land under whatever that
+  // points at (its projects/ dir), NOT necessarily ~/.claude/projects.
+  const configDir = process.env.CLAUDE_CONFIG_DIR || join(homedir(), ".claude");
+  const direct = join(configDir, "projects", encoded, `${fullSessionId}.jsonl`);
   if (existsSync(direct)) return direct;
-  const projects = join(homedir(), ".claude", "projects");
+  const projects = join(configDir, "projects");
   if (!existsSync(projects)) return null;
   for (const dir of readdirSync(projects)) {
     if (dir !== encoded) continue; // exact match only — prefer null over a collision-prone fuzzy match
@@ -653,9 +656,32 @@ function tryParseObj(s) {
 
 // ─── Polling ─────────────────────────────────────────────────────────────
 
+// Claude Code's `agents --json` reports liveness across TWO fields whose presence
+// shifted across CLI versions: `state` ("working" while running, "done" when
+// finished) is present throughout, while `status` ("idle"/"busy") appears only
+// once the session goes idle. The old code keyed solely on `status === "busy"`,
+// which is absent while working — so sawBusy never flipped and the loop always
+// spun the full timeout. Normalize both fields into running|finished|failed so
+// the poll no longer depends on one field's timing.
+function sessionPhase(s) {
+  const state = String(s?.state ?? "").toLowerCase();
+  const status = String(s?.status ?? "").toLowerCase();
+  if (state === "failed" || state === "error" || status === "failed") return "failed";
+  // `state` is authoritative for liveness and is present throughout the run, while
+  // `status` lags — it only appears once idle. Check running BEFORE finished so a
+  // transient {state:"working", status:"idle"} snapshot (the two fields update at
+  // different moments across CLI versions) is NOT misread as finished, which would
+  // stop polling early and read a half-flushed transcript.
+  if (state === "working" || state === "running" || status === "busy") return "running";
+  if (state === "done" || state === "completed" || status === "completed" || status === "idle") {
+    return "finished";
+  }
+  return "unknown";
+}
+
 async function pollUntilDone(fullSessionId, deadline, expectedNonce) {
-  let sawBusy = false;
-  let lastStatus = null;
+  let sawRunning = false;
+  let lastPhase = null;
   while (Date.now() < deadline) {
     const s = findSessionByFullId(fullSessionId);
     if (!s) {
@@ -663,19 +689,23 @@ async function pollUntilDone(fullSessionId, deadline, expectedNonce) {
       await sleep(cfg.pollIntervalMs);
       continue;
     }
-    if (s.status !== lastStatus) { log(`  status: ${s.status}`); lastStatus = s.status; }
-    if (s.status === "busy") sawBusy = true;
-    // Terminal states: completed, failed are unambiguous.
-    if (s.status === "completed" || s.status === "failed") return s;
-    // For "idle": accept after seeing busy, OR if the JSONL already contains a verdict
-    // with our nonce (fast sessions can flip past busy before we observe).
-    if (s.status === "idle") {
-      if (sawBusy) return s;
+    const phase = sessionPhase(s);
+    if (phase !== lastPhase) {
+      log(`  session: ${phase} (state=${s.state ?? "?"} status=${s.status ?? "?"})`);
+      lastPhase = phase;
+    }
+    if (phase === "running") sawRunning = true;
+    // Terminal failure is unambiguous.
+    if (phase === "failed") return s;
+    // Finished: accept after seeing it run, OR if the JSONL already contains a verdict
+    // with our nonce (fast sessions can flip past running before we observe).
+    if (phase === "finished") {
+      if (sawRunning) return s;
       if (expectedNonce) {
         const jsonl = findSessionJsonl(fullSessionId);
         if (jsonl) {
           const v = extractVerdict(lastAssistantText(jsonl), expectedNonce);
-          if (v) { log(`  status: idle (verdict already present — accepting without sawBusy)`); return s; }
+          if (v) { log(`  session: finished (verdict already present — accepting without sawRunning)`); return s; }
         }
       }
     }

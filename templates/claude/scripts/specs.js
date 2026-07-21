@@ -28,6 +28,7 @@ import {
   chmodSync, lstatSync, openSync, closeSync, renameSync,
 } from "node:fs";
 import { join, resolve, dirname, basename } from "node:path";
+import { pathToFileURL } from "node:url";
 import { spawn, spawnSync } from "node:child_process";
 import { homedir, hostname } from "node:os";
 import { randomUUID, randomBytes, createHash, createHmac, timingSafeEqual } from "node:crypto";
@@ -511,63 +512,7 @@ The nonce field is REQUIRED and must match exactly: ${nonce}`;
   return { prompt, nonce };
 }
 
-function dispatchReviewer(spec, specPath) {
-  const { prompt, nonce } = reviewRubric(spec, specPath);
-  const r = spawnSync("claude", ["--bg", "--dangerously-skip-permissions"], {
-    encoding: "utf-8",
-    input: prompt,
-    env: { ...process.env, SPECD_IN_WORKER: "1" },
-  });
-  if (r.error || r.status !== 0) die(`claude --bg failed: ${r.error?.message || r.stderr}`);
-  const m = r.stdout.match(/backgrounded\s*·\s*([0-9a-f]{8})/);
-  if (!m) die(`could not parse session id from: ${r.stdout}`);
-  return { shortId: m[1], nonce, dispatchedAt: Date.now() };
-}
-
-function findSession(sessionIdPrefix, dispatchedAt) {
-  for (let i = 0; i < 20; i++) {
-    const r = spawnSync("claude", ["agents", "--json"], { encoding: "utf-8" });
-    if (r.status === 0) {
-      try {
-        const list = JSON.parse(r.stdout);
-        const m = list.find(s => s.sessionId && s.sessionId.startsWith(sessionIdPrefix) &&
-                                  s.kind === "background" && s.startedAt >= dispatchedAt - 5_000);
-        if (m) return m;
-      } catch {}
-    }
-    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 500);
-  }
-  return null;
-}
-
-function findSessionJsonl(fullSessionId, cwd) {
-  const encoded = cwd.replaceAll("/", "-");
-  const direct = join(homedir(), ".claude", "projects", encoded, `${fullSessionId}.jsonl`);
-  if (existsSync(direct)) return direct;
-  const projects = join(homedir(), ".claude", "projects");
-  if (!existsSync(projects)) return null;
-  for (const dir of readdirSync(projects)) {
-    const file = join(projects, dir, `${fullSessionId}.jsonl`);
-    if (existsSync(file)) return file;
-  }
-  return null;
-}
-
-function lastAssistantText(jsonlPath) {
-  const lines = readFileSync(jsonlPath, "utf-8").trim().split("\n");
-  for (let i = lines.length - 1; i >= 0; i--) {
-    try {
-      const obj = JSON.parse(lines[i]);
-      if (obj.type === "assistant" && obj.message?.content) {
-        const text = obj.message.content.filter(c => c.type === "text").map(c => c.text).join("\n").trim();
-        if (text) return text;
-      }
-    } catch {}
-  }
-  return null;
-}
-
-function extractJudgeVerdict(text, expectedNonce) {
+export function extractJudgeVerdict(text, expectedNonce) {
   if (!text) return null;
   // Look for last balanced JSON object containing nonce + verdict
   for (let i = text.length - 1; i >= 0; i--) {
@@ -586,44 +531,62 @@ function extractJudgeVerdict(text, expectedNonce) {
   return null;
 }
 
-async function runReview(spec, specPath) {
-  const dispatched = dispatchReviewer(spec, specPath);
-  process.stderr.write(`dispatched reviewer ${dispatched.shortId}\n`);
-  const sleep = (ms) => new Promise(r => setTimeout(r, ms));
-  await sleep(1500);
-  const session = findSession(dispatched.shortId, dispatched.dispatchedAt);
-  if (!session) die(`reviewer session not found in agents list`);
-  const deadline = Date.now() + REVIEW_TIMEOUT_MS;
-  let sawBusy = false;
-  while (Date.now() < deadline) {
-    const r = spawnSync("claude", ["agents", "--json"], { encoding: "utf-8" });
-    if (r.status === 0) {
-      try {
-        const list = JSON.parse(r.stdout);
-        const s = list.find(x => x.sessionId === session.sessionId);
-        if (s) {
-          if (s.status === "busy") sawBusy = true;
-          if (sawBusy && (s.status === "idle" || s.status === "completed" || s.status === "failed")) break;
-        }
-      } catch {}
-    }
-    await sleep(2000);
+// Reviewer model: configurable, cheap default. Pinning it here (rather than
+// inheriting whatever the parent session runs) keeps grading cost and behavior
+// deterministic.
+const REVIEW_MODEL = process.env.SPECD_REVIEW_MODEL || "haiku";
+
+// Grade the spec with ONE synchronous `claude --print --output-format json` call.
+//   --tools ''           the grader reads the spec embedded in its prompt; no tools,
+//                        so no `--dangerously-skip-permissions` is needed.
+//   --setting-sources '' keep the host project's/user's CLAUDE.md, hooks, and
+//                        output-format rules out of the grader so it stays deterministic JSON.
+//   --output-format json give us { is_error, result } — `result` is the model's text,
+//                        which the retained extractJudgeVerdict scans for the fenced verdict.
+// No `--bg`, no `agents --json` polling, no transcript archaeology, no config-dir knowledge.
+function runReview(spec, specPath) {
+  const { prompt, nonce } = reviewRubric(spec, specPath);
+  const r = spawnSync(
+    "claude",
+    [
+      "--print",
+      "--model", REVIEW_MODEL,
+      "--tools", "",
+      "--setting-sources", "",
+      "--system-prompt", "You are a strict JSON-emitting grader. Output only JSON.",
+      "--output-format", "json",
+    ],
+    {
+      encoding: "utf-8",
+      input: prompt,
+      timeout: REVIEW_TIMEOUT_MS,
+      killSignal: "SIGKILL",
+      maxBuffer: 16 * 1024 * 1024,
+    },
+  );
+  // spawnSync's `timeout` kills the child but leaves status=null and signal set (and,
+  // depending on platform, error.code=ETIMEDOUT). A bare `r.status !== 0` check would
+  // report that as a spawn failure with an empty message — surface it as a timeout.
+  if (r.error) {
+    if (r.error.code === "ENOENT") die(`claude binary not on PATH`);
+    if (r.error.code === "ETIMEDOUT") die(`reviewer timed out after ${REVIEW_TIMEOUT_MS}ms`);
+    die(`claude --print failed: ${r.error.message}`);
   }
-  // Read transcript
-  for (let i = 0; i < 5; i++) {
-    const jsonl = findSessionJsonl(session.sessionId, process.cwd());
-    if (jsonl) {
-      const text = lastAssistantText(jsonl);
-      const verdict = extractJudgeVerdict(text, dispatched.nonce);
-      if (verdict) {
-        spawnSync("claude", ["stop", session.sessionId], { stdio: "ignore" });
-        return verdict;
-      }
-    }
-    await sleep(500);
+  if (r.signal) die(`reviewer killed by signal ${r.signal} (timeout after ${REVIEW_TIMEOUT_MS}ms?)`);
+  if (r.status !== 0) die(`claude --print exited ${r.status}: ${(r.stderr || "").trim()}`);
+
+  let envelope;
+  try {
+    envelope = JSON.parse(r.stdout);
+  } catch (e) {
+    die(`claude --print did not return JSON (${e.message}): ${truncate(r.stdout || "")}`);
   }
-  spawnSync("claude", ["stop", session.sessionId], { stdio: "ignore" });
-  die(`could not extract reviewer verdict (nonce mismatch or no JSON found)`);
+  if (envelope.is_error) {
+    die(`reviewer returned an error: ${envelope.result || envelope.subtype || "unknown"}`);
+  }
+  const verdict = extractJudgeVerdict(envelope.result, nonce);
+  if (!verdict) die(`could not extract reviewer verdict (nonce mismatch or no JSON found)`);
+  return verdict;
 }
 
 // ─── Verbs ──────────────────────────────────────────────────────────────
@@ -669,7 +632,7 @@ const verbs = {
     const { spec, path, text } = loadSpec(name);
     const errors = validateSpec(spec);
     if (errors.length) { errors.forEach(e => process.stderr.write(`  - ${e}\n`)); die(`structural errors; fix before review`); }
-    const verdict = await runReview(spec, path);
+    const verdict = runReview(spec, path);
     process.stdout.write(JSON.stringify(verdict, null, 2) + "\n");
     if (verdict.verdict === "pass") {
       writeApproval(name, {
@@ -751,12 +714,17 @@ function parseFlags(argv) {
 // dispatch is explicitly out of scope.
 const WORKER_FORBIDDEN_VERBS = new Set(["review"]);
 
-const [, , verb, ...rest] = process.argv;
-if (!verb || !verbs[verb]) {
-  process.stderr.write(`usage: specs.js <validate|test|review|gate|outline|list> <name> [args]\n`);
-  process.exit(2);
+// Only run the CLI when executed directly (`node specs.js …`), not when imported
+// (unit tests import extractJudgeVerdict and the other exports without triggering dispatch).
+const isMain = import.meta.url === (process.argv[1] ? pathToFileURL(process.argv[1]).href : "");
+if (isMain) {
+  const [, , verb, ...rest] = process.argv;
+  if (!verb || !verbs[verb]) {
+    process.stderr.write(`usage: specs.js <validate|test|review|gate|outline|list> <name> [args]\n`);
+    process.exit(2);
+  }
+  if (IN_WORKER && WORKER_FORBIDDEN_VERBS.has(verb)) {
+    die(`refusing ${verb} inside a worker session (SPECD_IN_WORKER=1). The orchestrator dispatches reviews; workers don't.`);
+  }
+  await verbs[verb](parseFlags(rest));
 }
-if (IN_WORKER && WORKER_FORBIDDEN_VERBS.has(verb)) {
-  die(`refusing ${verb} inside a worker session (SPECD_IN_WORKER=1). The orchestrator dispatches reviews; workers don't.`);
-}
-await verbs[verb](parseFlags(rest));
