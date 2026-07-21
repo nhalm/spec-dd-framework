@@ -133,3 +133,56 @@ describe("extractVerdict", () => {
     expect(elapsed).toBeLessThan(1_000); // would be ~3.7s without the bound
   });
 });
+
+// Copied verbatim from templates/claude/scripts/specd-loop.mjs (sessionPhase).
+// Same copy-to-avoid-import-side-effects rationale as extractVerdict above.
+// This is the RC2 regression guard: `claude agents --json` reports `state:"working"`
+// (no `status`) while running and `status:"idle", state:"done"` only once finished,
+// so keying solely on `status === "busy"` never flipped and the poll spun the full timeout.
+function sessionPhase(s) {
+  const state = String(s?.state ?? "").toLowerCase();
+  const status = String(s?.status ?? "").toLowerCase();
+  if (state === "failed" || state === "error" || status === "failed") return "failed";
+  if (state === "working" || state === "running" || status === "busy") return "running";
+  if (state === "done" || state === "completed" || status === "completed" || status === "idle") {
+    return "finished";
+  }
+  return "unknown";
+}
+
+describe("sessionPhase", () => {
+  it("maps the real running schema (state:working, no status) to running", () => {
+    expect(sessionPhase({ id: "x", kind: "background", state: "working" })).toBe("running");
+  });
+
+  it("maps the real finished schema (status:idle, state:done) to finished", () => {
+    expect(sessionPhase({ id: "x", kind: "background", status: "idle", state: "done" })).toBe(
+      "finished",
+    );
+  });
+
+  it("recognizes a running → finished transition (the RC2 fix: sawRunning can flip true)", () => {
+    const running = sessionPhase({ state: "working" });
+    const finished = sessionPhase({ status: "idle", state: "done" });
+    expect(running).toBe("running");
+    expect(finished).toBe("finished");
+  });
+
+  it("treats a transient {state:working, status:idle} as running, not finished (state wins)", () => {
+    // status lags state across CLI versions; misreading this as finished would stop
+    // polling early and read a half-flushed transcript.
+    expect(sessionPhase({ state: "working", status: "idle" })).toBe("running");
+  });
+
+  it("maps failure via either field", () => {
+    expect(sessionPhase({ state: "failed" })).toBe("failed");
+    expect(sessionPhase({ status: "failed" })).toBe("failed");
+    expect(sessionPhase({ state: "error" })).toBe("failed");
+  });
+
+  it("returns unknown for an empty/missing session record", () => {
+    expect(sessionPhase({})).toBe("unknown");
+    expect(sessionPhase(null)).toBe("unknown");
+    expect(sessionPhase(undefined)).toBe("unknown");
+  });
+});
