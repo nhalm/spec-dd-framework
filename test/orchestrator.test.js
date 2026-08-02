@@ -3,7 +3,7 @@
 // inline (it's the same logic in the template script and is the critical
 // security boundary for verdict forgery).
 
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
 
 // Copied verbatim from templates/claude/scripts/specd-loop.mjs (extractVerdict + helpers).
 // Keeping this in the test file avoids the orchestrator's import-time side effects
@@ -184,5 +184,213 @@ describe("sessionPhase", () => {
     expect(sessionPhase({})).toBe("unknown");
     expect(sessionPhase(null)).toBe("unknown");
     expect(sessionPhase(undefined)).toBe("unknown");
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Transcript resolution + audit outcome classification.
+//
+// Copied from templates/claude/scripts/specd-loop.mjs for the same reason as the
+// functions above (importing the orchestrator fires PID acquisition and log rotation
+// at module load). The module-level `cfg` and CLAUDE_CONFIG_DIR reads are lifted into
+// parameters so the resolver can run against a fixture. The "template drift guards"
+// block at the bottom fails if the template's copy of this logic changes.
+// ─────────────────────────────────────────────────────────────────────────────
+
+import {
+  mkdtempSync,
+  mkdirSync,
+  writeFileSync,
+  rmSync,
+  readFileSync,
+  existsSync,
+  readdirSync,
+  openSync,
+  readSync,
+  closeSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const LOOP_TEMPLATE = join(
+  fileURLToPath(new URL(".", import.meta.url)),
+  "..",
+  "templates",
+  "claude",
+  "scripts",
+  "specd-loop.mjs",
+);
+
+function encodeProjectDir(path) {
+  return path.replace(/[^a-zA-Z0-9]/g, "-");
+}
+
+const CWD_PROBE_BYTES = 64 * 1024;
+
+function transcriptCwd(jsonlPath) {
+  let fd;
+  try {
+    fd = openSync(jsonlPath, "r");
+    const buf = Buffer.alloc(CWD_PROBE_BYTES);
+    const read = readSync(fd, buf, 0, CWD_PROBE_BYTES, 0);
+    const m = buf
+      .subarray(0, read)
+      .toString("utf-8")
+      .match(/"cwd"\s*:\s*"((?:[^"\\]|\\.)*)"/);
+    return m ? JSON.parse(`"${m[1]}"`) : null;
+  } catch {
+    return null;
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
+}
+
+// `projects` and `cwd` are the lifted parameters (cfg.cwd + CLAUDE_CONFIG_DIR/projects).
+function findSessionJsonl(projects, cwd, fullSessionId) {
+  if (!existsSync(projects)) return null;
+  const direct = join(projects, encodeProjectDir(cwd), `${fullSessionId}.jsonl`);
+  if (existsSync(direct)) return direct;
+  for (const dir of readdirSync(projects)) {
+    const file = join(projects, dir, `${fullSessionId}.jsonl`);
+    if (!existsSync(file)) continue;
+    const recorded = transcriptCwd(file);
+    if (recorded && recorded !== cwd) continue;
+    return file;
+  }
+  return null;
+}
+
+const NO_BEHAVIORS_RE = /missing ### Behavior .*entries/i;
+
+function classifyTestOutput(stdout, stderr) {
+  try {
+    const parsed = JSON.parse(stdout);
+    if (parsed && Array.isArray(parsed.results)) return { outcome: "tested", ...parsed };
+  } catch {
+    /* fall through to stderr classification */
+  }
+
+  const bullets = stderr
+    .split("\n")
+    .map((l) => l.trim())
+    .filter((l) => l.startsWith("- "));
+  const untestable = bullets.length === 1 && NO_BEHAVIORS_RE.test(bullets[0]);
+  const detail = (stderr.trim() || stdout.trim() || "no output").split("\n")[0].slice(0, 200);
+  return { outcome: untestable ? "untestable" : "unknown", allPass: false, results: [], detail };
+}
+
+describe("encodeProjectDir", () => {
+  const SESSION = "0d2c3493-35be-43ee-90ba-aa3858519d55";
+
+  it("encodes dots as dashes — the worktree case that broke every verdict read", () => {
+    // Observed on disk: /repo/.claude/worktrees/b → -repo--claude-worktrees-b
+    expect(encodeProjectDir("/repo/.claude/worktrees/b")).toBe("-repo--claude-worktrees-b");
+  });
+
+  it("differs from the old slashes-only encoding exactly when the path has a dot", () => {
+    const dotted = "/repo/.claude/worktrees/b";
+    expect(encodeProjectDir(dotted)).not.toBe(dotted.replaceAll("/", "-"));
+    const plain = "/repo/src";
+    expect(encodeProjectDir(plain)).toBe(plain.replaceAll("/", "-"));
+  });
+
+  it("replaces every non-alphanumeric character and preserves case", () => {
+    expect(encodeProjectDir("/a_b/C.d/e~f")).toBe("-a-b-C-d-e-f");
+  });
+
+  let dir;
+  const mkTranscript = (projects, dirName, cwd) => {
+    mkdirSync(join(projects, dirName), { recursive: true });
+    const file = join(projects, dirName, `${SESSION}.jsonl`);
+    writeFileSync(file, JSON.stringify({ type: "user", sessionId: SESSION, cwd }) + "\n");
+    return file;
+  };
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "specd-projects-"));
+  });
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("resolves a dotted worktree cwd that the old encoding could never find", () => {
+    const cwd = "/repo/.claude/worktrees/dashboard-drill-window";
+    const file = mkTranscript(dir, encodeProjectDir(cwd), cwd);
+    // The old code looked here, found nothing, and its exact-match scan missed too.
+    expect(existsSync(join(dir, cwd.replaceAll("/", "-")))).toBe(false);
+    expect(findSessionJsonl(dir, cwd, SESSION)).toBe(file);
+  });
+
+  it("falls back to a session-id scan when the directory encoding is unexpected", () => {
+    const cwd = "/repo/worktrees/b";
+    const file = mkTranscript(dir, "some+future+encoding", cwd);
+    expect(findSessionJsonl(dir, cwd, SESSION)).toBe(file);
+  });
+
+  it("rejects a same-id transcript whose recorded cwd belongs to another session", () => {
+    mkTranscript(dir, "unrelated-project", "/somewhere/else");
+    expect(findSessionJsonl(dir, "/repo/worktrees/b", SESSION)).toBe(null);
+  });
+
+  it("returns null when the projects directory does not exist", () => {
+    expect(findSessionJsonl(join(dir, "nope"), "/repo", SESSION)).toBe(null);
+  });
+});
+
+describe("classifyTestOutput", () => {
+  it("classifies parseable results as tested", () => {
+    const out = JSON.stringify({ allPass: true, results: [{ behavior: 1, pass: true }] });
+    const r = classifyTestOutput(out, "");
+    expect(r.outcome).toBe("tested");
+    expect(r.allPass).toBe(true);
+  });
+
+  it("classifies a behaviour-less prose spec as untestable, NOT as passing", () => {
+    const stderr =
+      "  - missing ### Behavior N entries under ## Specification\n" +
+      "specs: spec coding-standards fails structural validation; fix before testing\n";
+    const r = classifyTestOutput("", stderr);
+    expect(r.outcome).toBe("untestable");
+    expect(r.allPass).toBe(false);
+  });
+
+  it("classifies any other structural failure as unknown, so it blocks a clean bill", () => {
+    const stderr =
+      "  - missing ## Specification section\n" +
+      "  - missing ### Behavior N entries under ## Specification\n" +
+      "specs: fails structural validation\n";
+    expect(classifyTestOutput("", stderr).outcome).toBe("unknown");
+  });
+
+  it("classifies unparseable stdout with no stderr as unknown", () => {
+    expect(classifyTestOutput("not json", "").outcome).toBe("unknown");
+  });
+
+  it("classifies empty output as unknown rather than silently clean", () => {
+    const r = classifyTestOutput("", "");
+    expect(r.outcome).toBe("unknown");
+    expect(r.detail).toBe("no output");
+  });
+});
+
+describe("template drift guards", () => {
+  const src = readFileSync(LOOP_TEMPLATE, "utf-8");
+
+  it("the template still encodes every non-alphanumeric character", () => {
+    expect(src).toContain(`return path.replace(/[^a-zA-Z0-9]/g, "-");`);
+  });
+
+  it("the template no longer carries the slashes-only encoding or exact-match scan", () => {
+    expect(src).not.toContain(`cfg.cwd.replaceAll("/", "-")`);
+    expect(src).not.toContain(`if (dir !== encoded) continue;`);
+  });
+
+  it("the template still splits untestable from unknown", () => {
+    expect(src).toContain(`outcome: untestable ? "untestable" : "unknown"`);
+  });
+
+  it("the audit only claims clean when nothing went unevaluated", () => {
+    expect(src).toContain(`if (unknown === 0) log(\`audit clean`);
   });
 });

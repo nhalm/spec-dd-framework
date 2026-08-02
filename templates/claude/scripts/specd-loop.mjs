@@ -12,7 +12,7 @@
 import { spawn, spawnSync } from "node:child_process";
 import {
   readFileSync, existsSync, readdirSync, writeFileSync, renameSync, statSync,
-  unlinkSync, mkdirSync, openSync, closeSync, appendFileSync, lstatSync,
+  unlinkSync, mkdirSync, openSync, closeSync, readSync, appendFileSync, lstatSync,
 } from "node:fs";
 import { join, resolve, dirname } from "node:path";
 import { homedir, hostname } from "node:os";
@@ -309,17 +309,41 @@ function specsList() {
   return names;
 }
 
+// A spec whose ONLY structural error is "no behaviors" is a prose/guidance document —
+// there is nothing to run, which is different from a spec that failed to evaluate.
+const NO_BEHAVIORS_RE = /missing ### Behavior .*entries/i;
+
+// Classify a `specs.js test` run into exactly one of three outcomes. Splitting
+// "untestable" from "unknown" is the whole point: the old code lumped every
+// non-parseable run under a logged-and-skipped `error`, which contributed nothing to
+// the queue, so the audit reported "clean — all specs' behaviors pass" while some
+// specs had never been evaluated at all. Unknown must block that claim; untestable
+// must be reported rather than silently counted as passing.
+function classifyTestOutput(stdout, stderr) {
+  try {
+    const parsed = JSON.parse(stdout);
+    if (parsed && Array.isArray(parsed.results)) return { outcome: "tested", ...parsed };
+  } catch { /* fall through to stderr classification */ }
+
+  const bullets = stderr.split("\n").map(l => l.trim()).filter(l => l.startsWith("- "));
+  const untestable = bullets.length === 1 && NO_BEHAVIORS_RE.test(bullets[0]);
+  const detail = (stderr.trim() || stdout.trim() || "no output").split("\n")[0].slice(0, 200);
+  return { outcome: untestable ? "untestable" : "unknown", allPass: false, results: [], detail };
+}
+
 function specsTestAsync(name) {
-  // Returns Promise<{ name, allPass, results }|null>.
+  // Returns Promise<{ name, outcome: "tested"|"untestable"|"unknown", ... }>.
   return new Promise(resolve => {
     const child = spawn("node", [join(cfg.scripts, "specs.js"), "test", name], { cwd: cfg.cwd });
-    let stdout = "";
+    let stdout = "", stderr = "";
     child.stdout.on("data", d => stdout += d.toString());
-    child.on("close", () => {
-      try { resolve({ name, ...JSON.parse(stdout) }); }
-      catch { resolve({ name, allPass: false, results: [], error: "could not parse specs.js test output" }); }
-    });
-    child.on("error", () => resolve(null));
+    child.stderr.on("data", d => stderr += d.toString());
+    child.on("close", () => resolve({ name, ...classifyTestOutput(stdout, stderr) }));
+    // A spawn failure is an unevaluated spec, not an absent one — it used to resolve
+    // null and be logged as "✗ (spawn error)" without blocking the clean claim.
+    child.on("error", e => resolve({
+      name, outcome: "unknown", allPass: false, results: [], detail: `spawn failed: ${e.message}`,
+    }));
   });
 }
 
@@ -332,13 +356,21 @@ function specReviewSync(name) {
 async function runAuditPhase() {
   log(`audit phase: running specs.js test in parallel across all specs`);
   const specs = specsList();
-  if (!specs.length) { log(`  no specs found`); return 0; }
+  if (!specs.length) { log(`  no specs found`); return { added: 0, untestable: 0, unknown: 0 }; }
   const results = await Promise.all(specs.map(specsTestAsync));
 
-  let totalAdded = 0;
+  let totalAdded = 0, untestable = 0, unknown = 0;
   for (const r of results) {
-    if (!r) { log(`  ✗ (spawn error)`); continue; }
-    if (r.error) { log(`  ✗ ${r.name}: ${r.error}`); continue; }
+    if (r.outcome === "untestable") {
+      untestable++;
+      log(`  — ${r.name}: no testable behaviors (${r.detail})`);
+      continue;
+    }
+    if (r.outcome === "unknown") {
+      unknown++;
+      log(`  ? ${r.name}: NOT EVALUATED — ${r.detail}`);
+      continue;
+    }
     if (r.allPass) { log(`  ✓ ${r.name}: all ${r.results.length} behaviors pass`); continue; }
     const fails = r.results.filter(x => !x.pass);
     log(`  ✗ ${r.name}: ${fails.length}/${r.results.length} behaviors failing`);
@@ -383,7 +415,7 @@ async function runAuditPhase() {
       }
     }
   }
-  return totalAdded;
+  return { added: totalAdded, untestable, unknown };
 }
 
 // ─── worklist.js helpers ─────────────────────────────────────────────────
@@ -562,25 +594,64 @@ function stopSession(fullId) {
   spawnSync("claude", ["stop", fullId], { stdio: "ignore" });
 }
 
+// Claude Code names a session's projects/ directory after its cwd with EVERY
+// non-alphanumeric character replaced by "-" — dots included. The old encoding here
+// replaced only "/", so any cwd containing a dot computed a directory that does not
+// exist:
+//
+//   cwd      /repo/.claude/worktrees/my-branch
+//   computed -repo-.claude-worktrees-my-branch     ← wrong, no such directory
+//   actual   -repo--claude-worktrees-my-branch
+//
+// That is the normal way to run the loop, and the exact-match fallback scan below
+// missed for the same reason, so findSessionJsonl returned null, no verdict could be
+// read, and every item was failed "conservatively" even though the worker had done
+// the work correctly.
+function encodeProjectDir(path) {
+  return path.replace(/[^a-zA-Z0-9]/g, "-");
+}
+
+// Transcripts record the cwd they ran in. Read it from the head of the file so a
+// scanned candidate can be confirmed without loading a multi-MB transcript.
+const CWD_PROBE_BYTES = 64 * 1024;
+
+function transcriptCwd(jsonlPath) {
+  let fd;
+  try {
+    fd = openSync(jsonlPath, "r");
+    const buf = Buffer.alloc(CWD_PROBE_BYTES);
+    const read = readSync(fd, buf, 0, CWD_PROBE_BYTES, 0);
+    const m = buf.subarray(0, read).toString("utf-8").match(/"cwd"\s*:\s*"((?:[^"\\]|\\.)*)"/);
+    return m ? JSON.parse(`"${m[1]}"`) : null;
+  } catch {
+    return null;
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
+}
+
 function findSessionJsonl(fullSessionId) {
-  // Encoding: cwd absolute path with / → -. Try that direct path first; fallback to scan.
-  // Caveat (R3-12): the slashes→dashes encoding is not injective; /a-b/c collides with
-  // /a/b-c. To minimize collision impact, we scan ONLY directories whose encoded
-  // form matches the FULL encoded cwd (not just a prefix), and we additionally
-  // verify the resolved JSONL file's sibling `*.cwd` or session record matches if
-  // available. For typical paths this is a no-op.
-  const encoded = cfg.cwd.replaceAll("/", "-");
   // Workers inherit CLAUDE_CONFIG_DIR, so transcripts land under whatever that
   // points at (its projects/ dir), NOT necessarily ~/.claude/projects.
   const configDir = process.env.CLAUDE_CONFIG_DIR || join(homedir(), ".claude");
-  const direct = join(configDir, "projects", encoded, `${fullSessionId}.jsonl`);
-  if (existsSync(direct)) return direct;
   const projects = join(configDir, "projects");
   if (!existsSync(projects)) return null;
+
+  const direct = join(projects, encodeProjectDir(cfg.cwd), `${fullSessionId}.jsonl`);
+  if (existsSync(direct)) return direct;
+
+  // Fallback for any encoding this build doesn't predict: fullSessionId is a UUID, so
+  // `<id>.jsonl` names at most one real transcript anywhere under projects/. Matching on
+  // that (and confirming the transcript's own recorded cwd when it has one) is both more
+  // robust than matching the encoded directory name and strictly safer than the previous
+  // exact-name match, which the R3-12 note wanted for collision safety but which could
+  // never actually disambiguate a collision — it only ever produced a null.
   for (const dir of readdirSync(projects)) {
-    if (dir !== encoded) continue; // exact match only — prefer null over a collision-prone fuzzy match
     const file = join(projects, dir, `${fullSessionId}.jsonl`);
-    if (existsSync(file)) return file;
+    if (!existsSync(file)) continue;
+    const recorded = transcriptCwd(file);
+    if (recorded && recorded !== cfg.cwd) continue; // different session's cwd — not ours
+    return file;
   }
   return null;
 }
@@ -935,9 +1006,13 @@ process.on("SIGUSR2", () => shutdown("SIGUSR2")); // Node's default for SIGUSR2 
     if (cfg.skipAudit) { log(`--skip-audit — exiting`); break; }
 
     // Audit phase: specs.js test on every spec, queue failures.
-    const added = await runAuditPhase();
+    const { added, untestable, unknown } = await runAuditPhase();
+    if (untestable) log(`audit: ${untestable} spec(s) have no testable behaviors — not counted as passing`);
     if (added === 0) {
-      log(`audit clean — all specs' behaviors pass. Exiting.`);
+      // Only a run where every spec actually reported results can claim "clean".
+      // Re-running would produce the same unknowns, so stop either way — but say which.
+      if (unknown === 0) log(`audit clean — all specs' behaviors pass. Exiting.`);
+      else log(`audit NOT clean — ${unknown} spec(s) could not be evaluated. Exiting without a clean bill.`);
       break;
     }
     log(`audit queued ${added} new item(s) — continuing to next cycle`);
